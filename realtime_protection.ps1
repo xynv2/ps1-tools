@@ -1,81 +1,102 @@
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
-function Get-DefenderStatus {
-    try {
-        $status = Get-MpPreference
-        return -not $status.DisableRealtimeMonitoring
-    } catch {
-        return $null
-    }
+function Is-Admin {
+    $id = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $p = New-Object Security.Principal.WindowsPrincipal($id)
+    return $p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
-function Set-DefenderStatus($enabled) {
+function Disable-RealTimeProtection {
     try {
-        Set-MpPreference -DisableRealtimeMonitoring (!$enabled)
+        New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender" -Force | Out-Null
+        Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender" -Name "DisableAntiSpyware" -Value 1 -Type DWord
+
+        $rtp = "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection"
+        New-Item -Path $rtp -Force | Out-Null
+        Set-ItemProperty -Path $rtp -Name "DisableRealtimeMonitoring" -Value 1 -Type DWord
+        Set-ItemProperty -Path $rtp -Name "DisableBehaviorMonitoring" -Value 1 -Type DWord
+        Set-ItemProperty -Path $rtp -Name "DisableOnAccessProtection" -Value 1 -Type DWord
+
         return $true
     } catch {
         return $false
     }
 }
 
-# Form
-$form = New-Object System.Windows.Forms.Form
-$form.Text = "Windows Defender Toggle"
-$form.Size = New-Object System.Drawing.Size(360, 180)
+function Enable-RealTimeProtection {
+    try {
+        Remove-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender" -Name "DisableAntiSpyware" -ErrorAction SilentlyContinue
+        Remove-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection" -Recurse -Force -ErrorAction SilentlyContinue
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+function Is-ProtectionDisabled {
+    try {
+        $val = Get-ItemPropertyValue -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender" -Name "DisableAntiSpyware" -ErrorAction SilentlyContinue
+        return ($val -eq 1)
+    } catch {
+        return $false
+    }
+}
+
+# GUI setup
+$form = New-Object Windows.Forms.Form
+$form.Text = "Defender Real-Time Toggle"
+$form.Size = New-Object Drawing.Size(420, 200)
 $form.StartPosition = "CenterScreen"
-$form.BackColor = [System.Drawing.Color]::FromArgb(30, 30, 30)
+$form.BackColor = [Drawing.Color]::FromArgb(25, 25, 25)
 $form.FormBorderStyle = "FixedDialog"
 $form.MaximizeBox = $false
 $form.TopMost = $true
 
-# Label
-$label = New-Object System.Windows.Forms.Label
-$label.Size = New-Object System.Drawing.Size(320, 30)
-$label.Location = New-Object System.Drawing.Point(20, 20)
-$label.Font = New-Object System.Drawing.Font("Segoe UI", 12, [System.Drawing.FontStyle]::Bold)
-$label.ForeColor = [System.Drawing.Color]::White
+$label = New-Object Windows.Forms.Label
+$label.ForeColor = [Drawing.Color]::White
+$label.Font = New-Object Drawing.Font("Segoe UI", 10)
+$label.AutoSize = $true
+$label.Location = New-Object Drawing.Point(30, 30)
 $form.Controls.Add($label)
 
-# Button
-$toggleButton = New-Object System.Windows.Forms.Button
-$toggleButton.Size = New-Object System.Drawing.Size(300, 40)
-$toggleButton.Location = New-Object System.Drawing.Point(30, 80)
-$toggleButton.BackColor = [System.Drawing.Color]::FromArgb(60, 60, 60)
-$toggleButton.ForeColor = [System.Drawing.Color]::Lime
+$toggleButton = New-Object Windows.Forms.Button
+$toggleButton.Size = New-Object Drawing.Size(340, 40)
+$toggleButton.Location = New-Object Drawing.Point(35, 80)
+$toggleButton.BackColor = [Drawing.Color]::FromArgb(50, 50, 50)
 $toggleButton.FlatStyle = "Flat"
-$toggleButton.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Regular)
+$toggleButton.Font = New-Object Drawing.Font("Segoe UI", 10)
 $form.Controls.Add($toggleButton)
 
-function RefreshStatus {
-    $status = Get-DefenderStatus
-    if ($status -eq $true) {
-        $label.Text = "Protection is ENABLED"
-        $toggleButton.Text = "Disable Real-Time Protection"
-        $toggleButton.ForeColor = [System.Drawing.Color]::OrangeRed
-    } elseif ($status -eq $false) {
-        $label.Text = "Protection is DISABLED"
-        $toggleButton.Text = "Enable Real-Time Protection"
-        $toggleButton.ForeColor = [System.Drawing.Color]::LimeGreen
+function RefreshGUI {
+    if (Is-ProtectionDisabled) {
+        $label.Text = "Real-Time Protection is OFF (Blocked)"
+        $toggleButton.Text = "Enable Protection"
+        $toggleButton.ForeColor = [Drawing.Color]::LimeGreen
     } else {
-        $label.Text = "Failed to get status"
-        $toggleButton.Text = "Try Again"
-        $toggleButton.ForeColor = [System.Drawing.Color]::Gray
+        $label.Text = "Real-Time Protection is ON"
+        $toggleButton.Text = "Disable Protection"
+        $toggleButton.ForeColor = [Drawing.Color]::OrangeRed
     }
 }
 
 $toggleButton.Add_Click({
-    $cur = Get-DefenderStatus
-    if ($cur -ne $null) {
-        $success = Set-DefenderStatus(-not $cur)
-        if ($success) {
-            Start-Sleep -Milliseconds 600
-            RefreshStatus
-        } else {
-            [System.Windows.Forms.MessageBox]::Show("Failed to change protection. Are you running as Administrator?","Error")
+    if (-not (Is-Admin)) {
+        [System.Windows.Forms.MessageBox]::Show("Run as Administrator.","Permission Denied",[System.Windows.Forms.MessageBoxButtons]::OK,[System.Windows.Forms.MessageBoxIcon]::Error)
+        return
+    }
+
+    if (Is-ProtectionDisabled) {
+        if (Enable-RealTimeProtection) {
+            [System.Windows.Forms.MessageBox]::Show("Protection has been re-enabled.","Enabled",[System.Windows.Forms.MessageBoxButtons]::OK,[System.Windows.Forms.MessageBoxIcon]::Information)
+        }
+    } else {
+        if (Disable-RealTimeProtection) {
+            [System.Windows.Forms.MessageBox]::Show("Protection has been disabled and cannot be turned back on from Windows UI.","Disabled",[System.Windows.Forms.MessageBoxButtons]::OK,[System.Windows.Forms.MessageBoxIcon]::Information)
         }
     }
+    RefreshGUI
 })
 
-RefreshStatus
+RefreshGUI
 $form.ShowDialog()
